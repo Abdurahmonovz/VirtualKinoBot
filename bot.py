@@ -52,7 +52,7 @@ def help_text():
     return (
         "📌 Bot ishlashi uchun avval majburiy kanal(lar)ga a’zo bo‘ling.\n"
         "🎬 Keyin kino kodini yuboring — bot kinoni chiqarib beradi.\n"
-        "Agar muammo bo‘lsa: /start ni bosing."
+        "Agar muammo bo‘lsa: @LOGO_55 ga murojaat qiling."
     )
 
 async def main():
