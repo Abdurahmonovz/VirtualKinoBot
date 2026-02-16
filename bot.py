@@ -1,5 +1,6 @@
 import os
 import asyncio
+from pathlib import Path
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
@@ -10,7 +11,9 @@ from db import DB
 from keyboards import main_menu, admin_menu, join_channels_kb
 from utils import is_admin, check_user_subscriptions
 
-load_dotenv()
+# ✅ .env har doim topilsin (PyCharm/Railway farqi yo‘q)
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMINS = set(int(x.strip()) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit())
@@ -21,8 +24,11 @@ if not BOT_TOKEN:
 
 db = DB(DB_PATH)
 
-# Admin “state”lar (oddiy, yengil)
+# Admin “state”
 admin_wait = {}  # user_id -> step dict
+
+def clear_admin_state(user_id: int):
+    admin_wait.pop(user_id, None)
 
 async def send_movie(bot: Bot, chat_id: int, movie_row):
     _, code, title, file_id, file_type = movie_row
@@ -33,7 +39,6 @@ async def send_movie(bot: Bot, chat_id: int, movie_row):
     elif file_type == "document":
         await bot.send_document(chat_id, file_id, caption=caption, parse_mode="HTML")
     else:
-        # fallback
         await bot.send_message(chat_id, f"{caption}\n\n⚠️ Fayl turi noma’lum.", parse_mode="HTML")
 
 async def require_subscribe(bot: Bot, user_id: int):
@@ -62,6 +67,9 @@ async def main():
 
     @dp.message(CommandStart())
     async def start(m: Message):
+        # ✅ FIX: /start bosilsa admin state tozalanadi (kino kodi kanalga aylanib qolmaydi)
+        clear_admin_state(m.from_user.id)
+
         await db.add_user(m.from_user.id)
 
         ok, kb = await require_subscribe(bot, m.from_user.id)
@@ -73,9 +81,20 @@ async def main():
 
     @dp.message(Command("admin"))
     async def admin_cmd(m: Message):
+        # ✅ FIX: /admin bosilsa ham state tozalanadi
+        clear_admin_state(m.from_user.id)
+
         if not await is_admin(m.from_user.id, ADMINS):
             return await m.answer("❌ Siz admin emassiz.")
-        await m.answer("🛠 Admin panel:", reply_markup=admin_menu())
+        await m.answer("🛠 Admin panel:\n❌ Bekor qilish: /cancel", reply_markup=admin_menu())
+
+    @dp.message(Command("cancel"))
+    async def cancel_cmd(m: Message):
+        if await is_admin(m.from_user.id, ADMINS):
+            clear_admin_state(m.from_user.id)
+            await m.answer("✅ Bekor qilindi. /admin orqali davom eting.")
+        else:
+            await m.answer("✅ Bekor qilindi.")
 
     @dp.callback_query(F.data == "check_sub")
     async def check_sub(c: CallbackQuery):
@@ -108,7 +127,8 @@ async def main():
             admin_wait[uid] = {"mode": "add_movie", "step": 1}
             await c.message.answer(
                 "➕ <b>Kino qo‘shish</b>\n"
-                "1) Kino <b>kodi</b>ni yuboring (unique).",
+                "1) Kino <b>kodi</b>ni yuboring (unique).\n"
+                "❌ Bekor qilish: /cancel",
                 parse_mode="HTML"
             )
             return await c.answer()
@@ -120,7 +140,7 @@ async def main():
                 return await c.answer()
             text = "🗑 <b>O‘chirish uchun kino ID</b> yuboring:\n\n" + "\n".join(
                 [f"ID: <code>{mid}</code> | <code>{code}</code> — {title}" for mid, code, title in movies]
-            )
+            ) + "\n\n❌ Bekor qilish: /cancel"
             admin_wait[uid] = {"mode": "del_movie", "step": 1}
             await c.message.answer(text, parse_mode="HTML")
             return await c.answer()
@@ -130,7 +150,8 @@ async def main():
             await c.message.answer(
                 "📌 <b>Kanal qo‘shish</b>\n"
                 "Kanal @username ni yuboring (masalan: @mychannel).\n"
-                "⚠️ Bot o‘sha kanalda admin bo‘lishi kerak.",
+                "⚠️ Bot o‘sha kanalda admin bo‘lishi kerak.\n"
+                "❌ Bekor qilish: /cancel",
                 parse_mode="HTML"
             )
             return await c.answer()
@@ -143,7 +164,7 @@ async def main():
             text = "❌ <b>O‘chirish uchun kanal ID</b> yuboring:\n\n" + "\n".join(
                 [f"ID: <code>{rid}</code> | {title or ''} {('@'+username) if username else ''} | chat_id={chat_id}"
                  for rid, chat_id, username, title in channels]
-            )
+            ) + "\n\n❌ Bekor qilish: /cancel"
             admin_wait[uid] = {"mode": "del_channel", "step": 1}
             await c.message.answer(text, parse_mode="HTML")
             return await c.answer()
@@ -158,7 +179,8 @@ async def main():
             await c.message.answer(
                 "📢 <b>Reklama qo‘shish</b>\n"
                 "Matn yuboring YOKI rasm/video/pdf yuboring.\n"
-                "Agar rasm/video/pdf bo‘lsa — caption’ga matn yozsangiz ham bo‘ladi.",
+                "Agar fayl bo‘lsa caption’ga matn yozsangiz ham bo‘ladi.\n"
+                "❌ Bekor qilish: /cancel",
                 parse_mode="HTML"
             )
             return await c.answer()
@@ -170,7 +192,7 @@ async def main():
                 return await c.answer()
             text = "🗑 <b>O‘chirish uchun reklama ID</b> yuboring:\n\n" + "\n".join(
                 [f"ID: <code>{aid}</code> | {atype}" for aid, atype, _, _ in ads]
-            )
+            ) + "\n\n❌ Bekor qilish: /cancel"
             admin_wait[uid] = {"mode": "del_ad", "step": 1}
             await c.message.answer(text, parse_mode="HTML")
             return await c.answer()
@@ -200,7 +222,7 @@ async def main():
                         else:
                             await bot.send_message(user_id, text or "")
                         sent += 1
-                        await asyncio.sleep(0.05)  # limit uchun
+                        await asyncio.sleep(0.05)
                     except Exception:
                         failed += 1
                         await asyncio.sleep(0.05)
@@ -210,31 +232,30 @@ async def main():
 
         await c.answer()
 
-    # ================= ADMIN INPUT HANDLER =================
+    # ================= MESSAGES =================
     @dp.message()
     async def all_messages(m: Message):
         uid = m.from_user.id
         await db.add_user(uid)
 
-        # Admin kutish rejimi
+        # Admin “state” bo‘lsa — faqat admin uchun ishlasin
         if uid in admin_wait and await is_admin(uid, ADMINS):
             st = admin_wait[uid]
 
-            # ---- ADD MOVIE ----
             if st["mode"] == "add_movie":
                 if st["step"] == 1:
                     st["code"] = (m.text or "").strip()
                     if not st["code"]:
-                        return await m.answer("❌ Kod bo‘sh bo‘lmasin. Qayta yuboring.")
+                        return await m.answer("❌ Kod bo‘sh bo‘lmasin. Qayta yuboring. (Bekor: /cancel)")
                     st["step"] = 2
-                    return await m.answer("2) Endi kino <b>nomi</b>ni yuboring.", parse_mode="HTML")
+                    return await m.answer("2) Endi kino <b>nomi</b>ni yuboring. (Bekor: /cancel)", parse_mode="HTML")
 
                 if st["step"] == 2:
                     st["title"] = (m.text or "").strip()
                     if not st["title"]:
-                        return await m.answer("❌ Nomi bo‘sh bo‘lmasin. Qayta yuboring.")
+                        return await m.answer("❌ Nomi bo‘sh bo‘lmasin. (Bekor: /cancel)")
                     st["step"] = 3
-                    return await m.answer("3) Endi <b>video</b>ni (yoki <b>fayl</b>ni) yuboring.", parse_mode="HTML")
+                    return await m.answer("3) Endi <b>video</b> (yoki <b>fayl</b>) yuboring. (Bekor: /cancel)", parse_mode="HTML")
 
                 if st["step"] == 3:
                     file_id = None
@@ -244,61 +265,53 @@ async def main():
                         file_id = m.video.file_id
                         file_type = "video"
                     elif m.document:
-                        # pdf ham shu yerga tushadi, lekin kinolar uchun odatda video
                         file_id = m.document.file_id
                         file_type = "document"
                     else:
-                        return await m.answer("❌ Video yoki fayl yuboring (video/document).")
+                        return await m.answer("❌ Video yoki fayl yuboring. (Bekor: /cancel)")
 
                     try:
                         await db.add_movie(st["code"], st["title"], file_id, file_type)
-                        admin_wait.pop(uid, None)
+                        clear_admin_state(uid)
                         return await m.answer("✅ Kino saqlandi. /admin orqali davom eting.")
                     except Exception as e:
-                        # unique code xatosi ko‘p uchraydi
-                        admin_wait.pop(uid, None)
+                        clear_admin_state(uid)
                         return await m.answer(f"❌ Saqlanmadi. Kod takror bo‘lishi mumkin.\nXato: {e}")
 
-            # ---- DELETE MOVIE ----
             if st["mode"] == "del_movie":
-                movie_id = None
                 try:
                     movie_id = int((m.text or "").strip())
                 except:
-                    return await m.answer("❌ ID raqam bo‘lishi kerak. Qayta yuboring.")
+                    return await m.answer("❌ ID raqam bo‘lishi kerak. (Bekor: /cancel)")
                 await db.delete_movie(movie_id)
-                admin_wait.pop(uid, None)
+                clear_admin_state(uid)
                 return await m.answer("✅ O‘chirildi (agar mavjud bo‘lsa).")
 
-            # ---- ADD CHANNEL ----
             if st["mode"] == "add_channel":
                 username = (m.text or "").strip()
                 if not username.startswith("@"):
-                    return await m.answer("❌ @ bilan boshlansin. Masalan: @mychannel")
+                    return await m.answer("❌ @ bilan boshlansin. Masalan: @mychannel (Bekor: /cancel)")
                 try:
                     chat = await bot.get_chat(username)
-                    # chat.id = -100....
                     await db.add_channel(chat.id, username.lstrip("@"), chat.title)
-                    admin_wait.pop(uid, None)
+                    clear_admin_state(uid)
                     return await m.answer(f"✅ Kanal qo‘shildi: {chat.title}")
                 except Exception as e:
                     return await m.answer(
                         "❌ Kanal qo‘shilmadi.\n"
                         "Botni kanalga admin qildingizmi?\n"
-                        f"Xato: {e}"
+                        f"Xato: {e}\n(Bekor: /cancel)"
                     )
 
-            # ---- DELETE CHANNEL ----
             if st["mode"] == "del_channel":
                 try:
                     rid = int((m.text or "").strip())
                 except:
-                    return await m.answer("❌ ID raqam bo‘lsin.")
+                    return await m.answer("❌ ID raqam bo‘lsin. (Bekor: /cancel)")
                 await db.delete_channel(rid)
-                admin_wait.pop(uid, None)
+                clear_admin_state(uid)
                 return await m.answer("✅ Kanal o‘chirildi (agar mavjud bo‘lsa).")
 
-            # ---- ADD AD ----
             if st["mode"] == "add_ad":
                 ad_type = None
                 file_id = None
@@ -307,37 +320,32 @@ async def main():
                 if m.text and not (m.photo or m.video or m.document):
                     ad_type = "text"
                     text = m.text
-
                 elif m.photo:
                     ad_type = "photo"
                     file_id = m.photo[-1].file_id
                     text = m.caption or ""
-
                 elif m.video:
                     ad_type = "video"
                     file_id = m.video.file_id
                     text = m.caption or ""
-
                 elif m.document:
                     ad_type = "document"
                     file_id = m.document.file_id
                     text = m.caption or ""
-
                 else:
-                    return await m.answer("❌ Reklama uchun matn/rasm/video/pdf yuboring.")
+                    return await m.answer("❌ Reklama uchun matn/rasm/video/pdf yuboring. (Bekor: /cancel)")
 
                 await db.add_ad(ad_type, file_id, text)
-                admin_wait.pop(uid, None)
+                clear_admin_state(uid)
                 return await m.answer("✅ Reklama saqlandi.")
 
-            # ---- DELETE AD ----
             if st["mode"] == "del_ad":
                 try:
                     aid = int((m.text or "").strip())
                 except:
-                    return await m.answer("❌ ID raqam bo‘lsin.")
+                    return await m.answer("❌ ID raqam bo‘lsin. (Bekor: /cancel)")
                 await db.delete_ad(aid)
-                admin_wait.pop(uid, None)
+                clear_admin_state(uid)
                 return await m.answer("✅ Reklama o‘chirildi (agar mavjud bo‘lsa).")
 
         # ============== USER FLOW (kino kod) ==============

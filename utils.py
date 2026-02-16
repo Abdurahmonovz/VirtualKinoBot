@@ -7,15 +7,15 @@ async def is_admin(user_id: int, admins: set[int]) -> bool:
 async def check_user_subscriptions(bot: Bot, user_id: int, channels: list[tuple]) -> bool:
     """
     channels rows: (id, chat_id, username, title)
-    bot kanal(lar)da admin bo‘lsa, chat_id bo‘yicha tekshiradi.
-    Agar chat_id bo‘lmasa (faqat username bo‘lsa) ham urinadi.
     """
     for _, chat_id, username, _ in channels:
         target = None
+
         if chat_id and chat_id != 0:
             target = chat_id
         elif username:
-            target = username
+            # ✅ FIX: username DB’da @siz saqlangan bo‘lishi mumkin, tekshiruvda @ bilan beramiz
+            target = f"@{username.lstrip('@')}"
 
         if not target:
             continue
@@ -25,7 +25,7 @@ async def check_user_subscriptions(bot: Bot, user_id: int, channels: list[tuple]
             if isinstance(member, (ChatMemberLeft, ChatMemberBanned)) or member.status in ("left", "kicked"):
                 return False
         except Exception:
-            # bot kanalni ko‘rmasa yoki huquqi bo‘lmasa — majburiy a’zolikni o‘tolmaydi.
+            # Bot kanalni ko‘rmasa yoki huquqi bo‘lmasa — majburiy a’zolik ishlamaydi
             return False
 
     return True
