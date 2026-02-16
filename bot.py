@@ -11,7 +11,7 @@ from db import DB
 from keyboards import main_menu, admin_menu, join_channels_kb
 from utils import is_admin, check_user_subscriptions
 
-# ✅ .env har doim topilsin (PyCharm/Railway farqi yo‘q)
+# .env har doim topilsin
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
@@ -25,10 +25,27 @@ if not BOT_TOKEN:
 db = DB(DB_PATH)
 
 # Admin “state”
-admin_wait = {}  # user_id -> step dict
+admin_wait: dict[int, dict] = {}
 
 def clear_admin_state(user_id: int):
     admin_wait.pop(user_id, None)
+
+def help_text():
+    return (
+        "📌 Bot ishlashi uchun avval majburiy kanal(lar)ga a’zo bo‘ling.\n"
+        "🎬 Keyin kino kodini yuboring — bot kinoni chiqarib beradi.\n"
+        "Agar muammo bo‘lsa: @LOGO_55 ga murojaat qiling."
+    )
+
+def subscribe_error_text(reason: str | None) -> str:
+    if reason == "bot_not_admin_or_no_access":
+        return (
+            "❗ Kanal(lar)ga a’zo bo‘ling.\n\n"
+            "Agar siz a’zo bo‘lsangiz ham o‘tkazmayotgan bo‘lsa:\n"
+            "✅ Botni o‘sha kanal(lar)ga ADMIN qiling (aks holda bot a’zolikni tekshira olmaydi)."
+        )
+    # not_subscribed or unknown
+    return "❗ Botdan foydalanish uchun quyidagi kanal(lar)ga a’zo bo‘ling:"
 
 async def send_movie(bot: Bot, chat_id: int, movie_row):
     _, code, title, file_id, file_type = movie_row
@@ -42,23 +59,22 @@ async def send_movie(bot: Bot, chat_id: int, movie_row):
         await bot.send_message(chat_id, f"{caption}\n\n⚠️ Fayl turi noma’lum.", parse_mode="HTML")
 
 async def require_subscribe(bot: Bot, user_id: int):
+    """
+    Returns (ok, keyboard_or_none, reason_or_none)
+    """
+    # ✅ ADMIN BYPASS: adminlar uchun umuman a’zolik sharti yo‘q
+    if await is_admin(user_id, ADMINS):
+        return True, None, None
+
     channels = await db.list_channels()
     if not channels:
-        return True, None
+        return True, None, None
 
-    ok = await check_user_subscriptions(bot, user_id, channels)
+    ok, reason = await check_user_subscriptions(bot, user_id, channels)
     if ok:
-        return True, None
+        return True, None, None
 
-    kb = join_channels_kb(channels)
-    return False, kb
-
-def help_text():
-    return (
-        "📌 Bot ishlashi uchun avval majburiy kanal(lar)ga a’zo bo‘ling.\n"
-        "🎬 Keyin kino kodini yuboring — bot kinoni chiqarib beradi.\n"
-        "Agar muammo bo‘lsa: @LOGO_55 ga murojaat qiling."
-    )
+    return False, join_channels_kb(channels), reason
 
 async def main():
     await db.init()
@@ -67,26 +83,22 @@ async def main():
 
     @dp.message(CommandStart())
     async def start(m: Message):
-        # ✅ FIX: /start bosilsa admin state tozalanadi (kino kodi kanalga aylanib qolmaydi)
         clear_admin_state(m.from_user.id)
-
         await db.add_user(m.from_user.id)
 
-        ok, kb = await require_subscribe(bot, m.from_user.id)
+        ok, kb, reason = await require_subscribe(bot, m.from_user.id)
         if not ok:
-            await m.answer("❗ Botdan foydalanish uchun quyidagi kanal(lar)ga a’zo bo‘ling:", reply_markup=kb)
+            await m.answer(subscribe_error_text(reason), reply_markup=kb)
             return
 
         await m.answer("🎬 Kino kodini yuboring yoki pastdagi tugmalardan foydalaning.", reply_markup=main_menu())
 
     @dp.message(Command("admin"))
     async def admin_cmd(m: Message):
-        # ✅ FIX: /admin bosilsa ham state tozalanadi
         clear_admin_state(m.from_user.id)
-
         if not await is_admin(m.from_user.id, ADMINS):
             return await m.answer("❌ Siz admin emassiz.")
-        await m.answer("🛠 Admin panel:\n❌ Bekor qilish: /cancel", reply_markup=admin_menu())
+        await m.answer("🛠 Admin panel\nBekor qilish: /cancel\nTekshiruv: /checkchannels", reply_markup=admin_menu())
 
     @dp.message(Command("cancel"))
     async def cancel_cmd(m: Message):
@@ -96,14 +108,32 @@ async def main():
         else:
             await m.answer("✅ Bekor qilindi.")
 
+    @dp.message(Command("checkchannels"))
+    async def checkchannels(m: Message):
+        if not await is_admin(m.from_user.id, ADMINS):
+            return
+        channels = await db.list_channels()
+        if not channels:
+            return await m.answer("Kanallar ro‘yxati bo‘sh.")
+        lines = ["🔎 Kanal tekshiruvi (bot admin/huquq):"]
+        for rid, chat_id, username, title in channels:
+            target = chat_id if chat_id else f"@{username}"
+            try:
+                me = await bot.get_chat_member(target, bot.id)
+                st = getattr(me, "status", "unknown")
+                lines.append(f"✅ ID:{rid} | {title or ''} @{username or ''} | bot_status={st}")
+            except Exception as e:
+                lines.append(f"❌ ID:{rid} | {title or ''} @{username or ''} | xato: {type(e).__name__}")
+        await m.answer("\n".join(lines))
+
     @dp.callback_query(F.data == "check_sub")
     async def check_sub(c: CallbackQuery):
-        ok, kb = await require_subscribe(bot, c.from_user.id)
+        ok, kb, reason = await require_subscribe(bot, c.from_user.id)
         if ok:
             await c.message.answer("✅ A’zo bo‘ldingiz. Endi kino kodini yuboring.", reply_markup=main_menu())
             await c.answer()
         else:
-            await c.message.answer("❌ Hali hamma kanalga a’zo bo‘lmagansiz.", reply_markup=kb)
+            await c.message.answer(subscribe_error_text(reason), reply_markup=kb)
             await c.answer()
 
     @dp.message(F.text == "ℹ️ Yordam")
@@ -126,9 +156,7 @@ async def main():
         if action == "add_movie":
             admin_wait[uid] = {"mode": "add_movie", "step": 1}
             await c.message.answer(
-                "➕ <b>Kino qo‘shish</b>\n"
-                "1) Kino <b>kodi</b>ni yuboring (unique).\n"
-                "❌ Bekor qilish: /cancel",
+                "➕ <b>Kino qo‘shish</b>\n1) Kino <b>kodi</b>ni yuboring.\nBekor: /cancel",
                 parse_mode="HTML"
             )
             return await c.answer()
@@ -140,7 +168,7 @@ async def main():
                 return await c.answer()
             text = "🗑 <b>O‘chirish uchun kino ID</b> yuboring:\n\n" + "\n".join(
                 [f"ID: <code>{mid}</code> | <code>{code}</code> — {title}" for mid, code, title in movies]
-            ) + "\n\n❌ Bekor qilish: /cancel"
+            ) + "\n\nBekor: /cancel"
             admin_wait[uid] = {"mode": "del_movie", "step": 1}
             await c.message.answer(text, parse_mode="HTML")
             return await c.answer()
@@ -148,10 +176,8 @@ async def main():
         if action == "add_channel":
             admin_wait[uid] = {"mode": "add_channel", "step": 1}
             await c.message.answer(
-                "📌 <b>Kanal qo‘shish</b>\n"
-                "Kanal @username ni yuboring (masalan: @mychannel).\n"
-                "⚠️ Bot o‘sha kanalda admin bo‘lishi kerak.\n"
-                "❌ Bekor qilish: /cancel",
+                "📌 <b>Kanal qo‘shish</b>\nKanal @username yuboring (masalan: @mychannel).\n"
+                "⚠️ Bot o‘sha kanalda ADMIN bo‘lishi kerak.\nBekor: /cancel",
                 parse_mode="HTML"
             )
             return await c.answer()
@@ -164,7 +190,7 @@ async def main():
             text = "❌ <b>O‘chirish uchun kanal ID</b> yuboring:\n\n" + "\n".join(
                 [f"ID: <code>{rid}</code> | {title or ''} {('@'+username) if username else ''} | chat_id={chat_id}"
                  for rid, chat_id, username, title in channels]
-            ) + "\n\n❌ Bekor qilish: /cancel"
+            ) + "\n\nBekor: /cancel"
             admin_wait[uid] = {"mode": "del_channel", "step": 1}
             await c.message.answer(text, parse_mode="HTML")
             return await c.answer()
@@ -177,10 +203,7 @@ async def main():
         if action == "add_ad":
             admin_wait[uid] = {"mode": "add_ad", "step": 1}
             await c.message.answer(
-                "📢 <b>Reklama qo‘shish</b>\n"
-                "Matn yuboring YOKI rasm/video/pdf yuboring.\n"
-                "Agar fayl bo‘lsa caption’ga matn yozsangiz ham bo‘ladi.\n"
-                "❌ Bekor qilish: /cancel",
+                "📢 <b>Reklama qo‘shish</b>\nMatn yoki rasm/video/pdf yuboring.\nBekor: /cancel",
                 parse_mode="HTML"
             )
             return await c.answer()
@@ -192,7 +215,7 @@ async def main():
                 return await c.answer()
             text = "🗑 <b>O‘chirish uchun reklama ID</b> yuboring:\n\n" + "\n".join(
                 [f"ID: <code>{aid}</code> | {atype}" for aid, atype, _, _ in ads]
-            ) + "\n\n❌ Bekor qilish: /cancel"
+            ) + "\n\nBekor: /cancel"
             admin_wait[uid] = {"mode": "del_ad", "step": 1}
             await c.message.answer(text, parse_mode="HTML")
             return await c.answer()
@@ -209,7 +232,7 @@ async def main():
             sent = 0
             failed = 0
             for user_id in users:
-                for ad_id, ad_type, file_id, text in ads:
+                for _, ad_type, file_id, text in ads:
                     try:
                         if ad_type == "text":
                             await bot.send_message(user_id, text or "")
@@ -238,7 +261,7 @@ async def main():
         uid = m.from_user.id
         await db.add_user(uid)
 
-        # Admin “state” bo‘lsa — faqat admin uchun ishlasin
+        # Admin state faqat adminlar uchun
         if uid in admin_wait and await is_admin(uid, ADMINS):
             st = admin_wait[uid]
 
@@ -299,8 +322,8 @@ async def main():
                 except Exception as e:
                     return await m.answer(
                         "❌ Kanal qo‘shilmadi.\n"
-                        "Botni kanalga admin qildingizmi?\n"
-                        f"Xato: {e}\n(Bekor: /cancel)"
+                        "Botni kanalga ADMIN qildingizmi?\n"
+                        f"Xato: {type(e).__name__}\n(Bekor: /cancel)"
                     )
 
             if st["mode"] == "del_channel":
@@ -348,10 +371,10 @@ async def main():
                 clear_admin_state(uid)
                 return await m.answer("✅ Reklama o‘chirildi (agar mavjud bo‘lsa).")
 
-        # ============== USER FLOW (kino kod) ==============
-        ok, kb = await require_subscribe(bot, uid)
+        # USER FLOW
+        ok, kb, reason = await require_subscribe(bot, uid)
         if not ok:
-            return await m.answer("❗ Avval kanal(lar)ga a’zo bo‘ling:", reply_markup=kb)
+            return await m.answer(subscribe_error_text(reason), reply_markup=kb)
 
         code = (m.text or "").strip()
         if not code or code.startswith("/"):
